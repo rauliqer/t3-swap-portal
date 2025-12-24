@@ -394,106 +394,163 @@ export default function Page() {
   // ============================================================
 
   const scanEligibleForActivePortal = async () => {
-    try {
-      setErrorMessage(null);
-      setSuccessMessage(null);
+  try {
+    // Reset UI messages
+    setErrorMessage(null);
+    setSuccessMessage(null);
 
-      if (typeof window === "undefined" || !window.ethereum) {
-        setErrorMessage("MetaMask not found.");
-        return;
-      }
-      if (!walletAddress) {
-        setErrorMessage("Connect your wallet first.");
-        return;
-      }
-      if (!isOnLinea) {
-        setErrorMessage("Switch wallet network to Linea.");
-        return;
-      }
-
-      setIsScanning(true);
-
-      const provider = new ethers.providers.Web3Provider(window.ethereum);
-
-      const nftAddress =
-        activePortal === "tickets"
-          ? TICKETS_NFT_CONTRACT_ADDRESS
-          : TBAGGIEZ_NFT_CONTRACT_ADDRESS;
-
-      const nft = new ethers.Contract(nftAddress, NFT_CONTRACT_ABI, provider);
-
-      const MAX_IDS_PER_SLOT = 500;
-
-      if (activePortal === "tickets") {
-        const newOptions: number[][] = [[], [], [], []];
-
-        for (let i = 0; i < 4; i++) {
-          const r = ticketsRanges[i];
-          if (!r) continue;
-
-          const min = parseInt(r.minId || "0", 10);
-          const max = parseInt(r.maxId || "0", 10);
-          if (isNaN(min) || isNaN(max) || min > max) continue;
-
-          const limit = Math.min(max, min + MAX_IDS_PER_SLOT - 1);
-          const ownedIds: number[] = [];
-
-          for (let id = min; id <= limit; id++) {
-            try {
-              const owner: string = await nft.ownerOf(id);
-              if (owner.toLowerCase() === walletAddress.toLowerCase()) {
-                ownedIds.push(id);
-              }
-            } catch {
-              // ignore non-existent IDs
-            }
-          }
-
-          newOptions[i] = ownedIds;
-        }
-
-        setTicketSlotOptions(newOptions);
-        setHasScannedTickets(true);
-      } else {
-        const newOptions: number[][] = [[], [], []];
-
-        for (let i = 0; i < 3; i++) {
-          const r = tbagRanges[i];
-          if (!r) continue;
-
-          const min = parseInt(r.minId || "0", 10);
-          const max = parseInt(r.maxId || "0", 10);
-          if (isNaN(min) || isNaN(max) || min > max) continue;
-
-          const limit = Math.min(max, min + MAX_IDS_PER_SLOT - 1);
-          const ownedIds: number[] = [];
-
-          for (let id = min; id <= limit; id++) {
-            try {
-              const owner: string = await nft.ownerOf(id);
-              if (owner.toLowerCase() === walletAddress.toLowerCase()) {
-                ownedIds.push(id);
-              }
-            } catch {
-              // ignore
-            }
-          }
-
-          newOptions[i] = ownedIds;
-        }
-
-        setTbagSlotOptions(newOptions);
-        setHasScannedTBaggiez(true);
-      }
-    } catch (err) {
-      console.error("Scan error:", err);
-      setErrorMessage(
-        "Failed to scan wallet for eligible NFTs. Check console for details."
-      );
-    } finally {
-      setIsScanning(false);
+    // Basic environment checks
+    if (typeof window === "undefined" || !window.ethereum) {
+      setErrorMessage("MetaMask not found.");
+      return;
     }
-  };
+
+    if (!walletAddress) {
+      setErrorMessage("Connect your wallet first.");
+      return;
+    }
+
+    if (!isOnLinea) {
+      setErrorMessage("Switch wallet network to Linea.");
+      return;
+    }
+
+    setIsScanning(true);
+
+    // Create provider from MetaMask
+    const provider = new ethers.providers.Web3Provider(window.ethereum);
+
+    // Select NFT contract based on active portal
+    const nftAddress =
+      activePortal === "tickets"
+        ? TICKETS_NFT_CONTRACT_ADDRESS
+        : TBAGGIEZ_NFT_CONTRACT_ADDRESS;
+
+    // Instantiate NFT contract
+    const nft = new ethers.Contract(
+      nftAddress,
+      NFT_CONTRACT_ABI,
+      provider
+    );
+
+    const MAX_IDS_PER_SLOT = 500;
+    const BATCH_SIZE = 20; // Safe batch size for MetaMask RPC
+
+    if (activePortal === "tickets") {
+      const newOptions: number[][] = [[], [], [], []];
+
+      // Loop through ticket slots
+      for (let i = 0; i < 4; i++) {
+        const r = ticketsRanges[i];
+        if (!r) continue;
+
+        // Parse range boundaries
+        const min = parseInt(r.minId || "0", 10);
+        const max = parseInt(r.maxId || "0", 10);
+        if (isNaN(min) || isNaN(max) || min > max) continue;
+
+        // Limit how many token IDs are scanned per slot
+        const limit = Math.min(max, min + MAX_IDS_PER_SLOT - 1);
+        const ownedIds: number[] = [];
+
+        // Scan token IDs in parallel batches
+        for (let start = min; start <= limit; start += BATCH_SIZE) {
+          const end = Math.min(start + BATCH_SIZE - 1, limit);
+
+          // Prepare parallel ownerOf calls
+          const calls = [];
+          for (let id = start; id <= end; id++) {
+            calls.push(
+              nft
+                .ownerOf(id)
+                .then((owner: string) => ({ id, owner }))
+                .catch(() => null) // Ignore non-existent token IDs
+            );
+          }
+
+          // Execute batch
+          const results = await Promise.all(calls);
+
+          // Filter tokens owned by the connected wallet
+          for (const r of results) {
+            if (
+              r &&
+              r.owner.toLowerCase() === walletAddress.toLowerCase()
+            ) {
+              ownedIds.push(r.id);
+            }
+          }
+        }
+
+        newOptions[i] = ownedIds;
+      }
+
+      // Update ticket scan state
+      setTicketSlotOptions(newOptions);
+      setHasScannedTickets(true);
+    } else {
+      const newOptions: number[][] = [[], [], []];
+
+      // Loop through TBaggiez slots
+      for (let i = 0; i < 3; i++) {
+        const r = tbagRanges[i];
+        if (!r) continue;
+
+        // Parse range boundaries
+        const min = parseInt(r.minId || "0", 10);
+        const max = parseInt(r.maxId || "0", 10);
+        if (isNaN(min) || isNaN(max) || min > max) continue;
+
+        // Limit how many token IDs are scanned per slot
+        const limit = Math.min(max, min + MAX_IDS_PER_SLOT - 1);
+        const ownedIds: number[] = [];
+
+        // Scan token IDs in parallel batches
+        for (let start = min; start <= limit; start += BATCH_SIZE) {
+          const end = Math.min(start + BATCH_SIZE - 1, limit);
+
+          // Prepare parallel ownerOf calls
+          const calls = [];
+          for (let id = start; id <= end; id++) {
+            calls.push(
+              nft
+                .ownerOf(id)
+                .then((owner: string) => ({ id, owner }))
+                .catch(() => null)
+            );
+          }
+
+          // Execute batch
+          const results = await Promise.all(calls);
+
+          // Filter tokens owned by the connected wallet
+          for (const r of results) {
+            if (
+              r &&
+              r.owner.toLowerCase() === walletAddress.toLowerCase()
+            ) {
+              ownedIds.push(r.id);
+            }
+          }
+        }
+
+        newOptions[i] = ownedIds;
+      }
+
+      // Update TBaggiez scan state
+      setTbagSlotOptions(newOptions);
+      setHasScannedTBaggiez(true);
+    }
+  } catch (err) {
+    console.error("Scan error:", err);
+    setErrorMessage(
+      "Failed to scan wallet for eligible NFTs. Check console for details."
+    );
+  } finally {
+    // Always stop loading state
+    setIsScanning(false);
+  }
+};
 
   // ============================================================
   // SWAP HANDLER
